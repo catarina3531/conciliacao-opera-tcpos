@@ -9,76 +9,67 @@ st.set_page_config(page_title="Conciliação TCPOS x Opera", page_icon="📊", l
 st.title("📊 Conciliação Diária: TCPOS vs Opera")
 st.markdown("Faça o upload dos relatórios em PDF para cruzar os cupons e identificar divergências.")
 
-# --- FUNÇÕES DE EXTRAÇÃO ---
+# --- FUNÇÕES DE EXTRAÇÃO MELHORADAS ---
 
 @st.cache_data
 def extrair_tcpos(arquivo_pdf):
-    # Molde Regex para o TCPOS
-    padrao_linha = re.compile(r"^(\d{2}:\d{2})\s+(\d+)\s+(?P<cupom>\d+)\s+(?P<conta>\d+)\s+\$(?P<valor>[\d\.,]+)\s+(.*?)\s+(\d{44})$")
-    dados = []
-    
+    texto_completo = ""
     with pdfplumber.open(arquivo_pdf) as pdf:
         for pagina in pdf.pages:
-            texto = pagina.extract_text()
-            if texto:
-                for linha in texto.split('\n'):
-                    linha = linha.strip()
-                    match = padrao_linha.search(linha)
-                    if match:
-                        dados.append({
-                            "Hora_TCPOS": match.group(1),
-                            "Cupom": str(match.group('cupom')),
-                            "Conta": str(match.group('conta')),
-                            "Valor_TCPOS": float(match.group('valor').replace(',', '')),
-                            "Operador": match.group(6).strip()
-                        })
+            texto_pagina = pagina.extract_text()
+            if texto_pagina:
+                texto_completo += " " + texto_pagina
+                
+    # Remove quebras de linha para criar um texto único e contínuo
+    texto_limpo = re.sub(r'\s+', ' ', texto_completo)
+    
+    # Molde à prova de falhas: aceita o "$" antes ou depois do valor, e ignora espaços extras
+    padrao = re.compile(r"(?P<hora>\d{2}:\d{2})\s+(?P<serie>\d+)\s+(?P<cupom>\d+)\s+(?P<conta>\d+)\s+[\$\s]*(?P<valor>\d+[\.,]\d{2})[\$\s]+(?P<operador>.*?)\s+(?P<chave>\d{44})")
+    
+    dados = []
+    for match in padrao.finditer(texto_limpo):
+        dados.append({
+            "Hora_TCPOS": match.group('hora'),
+            "Cupom": str(match.group('cupom')),
+            "Conta": str(match.group('conta')),
+            "Valor_TCPOS": float(match.group('valor').replace(',', '')),
+            "Operador": match.group('operador').strip()
+        })
+        
     return pd.DataFrame(dados)
 
 @st.cache_data
 def extrair_opera(arquivo_pdf):
-    # Molde Regex ajustado para pegar o CHECK# (Conta) e o NF: (Cupom) e o valor no final da linha
-    # Exemplo alvo: 23/07/26 ... CHECK# 1146 - Serie:2 - NF:7129 ... BRL 8.00
-    
-    # Vamos usar uma abordagem mais flexível para ler o texto do Opera linha a linha
-    dados = []
-    
+    texto_completo = ""
     with pdfplumber.open(arquivo_pdf) as pdf:
         for pagina in pdf.pages:
-            texto = pagina.extract_text()
-            if texto:
-                for linha in texto.split('\n'):
-                    linha = linha.strip()
-                    
-                    # Procura por linhas que tenham a data no início, o código BRL e um valor
-                    if re.match(r"^\d{2}/\d{2}/\d{2}", linha) and "BRL" in linha:
-                        
-                        # Extrai a Conta (após CHECK# ou no início da string de referência)
-                        conta_match = re.search(r"(?:CHECK#\s*|^)(?P<conta>\d+)\s*-\s*Serie", linha)
-                        
-                        # Extrai o Cupom (após NF:)
-                        cupom_match = re.search(r"NF:\s*(?P<cupom>\d+)", linha)
-                        
-                        # Extrai o Valor (após BRL)
-                        valor_match = re.search(r"BRL\s+(?P<valor>[\d\.,]+)", linha)
-                        
-                        # Extrai a Data
-                        data_match = re.match(r"^(\d{2}/\d{2}/\d{2})", linha)
-                        
-                        if conta_match and cupom_match and valor_match:
-                            # Para casos onde o NF traz o ano grudado (ex: 71292026072), pegamos apenas os primeiros digitos
-                            cupom_bruto = cupom_match.group('cupom')
-                            if len(cupom_bruto) > 6 and "2026" in cupom_bruto:
-                                cupom_limpo = cupom_bruto.split("2026")[0]
-                            else:
-                                cupom_limpo = cupom_bruto
-
-                            dados.append({
-                                "Data_Opera": data_match.group(1) if data_match else "",
-                                "Conta": str(conta_match.group('conta')),
-                                "Cupom": str(cupom_limpo),
-                                "Valor_Opera": float(valor_match.group('valor').replace(',', ''))
-                            })
-                            
+            texto_pagina = pagina.extract_text()
+            if texto_pagina:
+                texto_completo += " " + texto_pagina
+                
+    texto_limpo = re.sub(r'\s+', ' ', texto_completo)
+    
+    # Molde focado no bloco final da transação do Opera, que sempre traz Conta, Cupom e BRL juntos
+    padrao = re.compile(r"(?P<conta>\d+)\s*-\s*Serie.*?NF:\s*(?P<cupom>\d+).*?BRL\s+(?P<valor>\d+[\.,]\d{2})")
+    
+    dados = []
+    for match in padrao.finditer(texto_limpo):
+        cupom_bruto = match.group('cupom')
+        
+        # O Opera às vezes cola o ano "2026" no número do cupom. Isso limpa o excesso.
+        if len(cupom_bruto) > 6 and "202" in cupom_bruto:
+            idx = cupom_bruto.find("202")
+            cupom_limpo = cupom_bruto[:idx]
+        else:
+            cupom_limpo = cupom_bruto
+            
+        dados.append({
+            "Conta": str(match.group('conta')),
+            "Cupom": str(cupom_limpo),
+            "Valor_Opera": float(match.group('valor').replace(',', '')),
+            "Data_Opera": "Consta no PDF" # Mantido para não quebrar a tabela visual
+        })
+        
     return pd.DataFrame(dados)
 
 
@@ -106,8 +97,11 @@ if file_tcpos and file_opera:
             df_tcpos = extrair_tcpos(file_tcpos)
             df_opera = extrair_opera(file_opera)
             
+            # Verificação de extração
             if df_tcpos.empty or df_opera.empty:
-                st.error("❌ Não foi possível extrair dados de um dos PDFs. Verifique o formato.")
+                st.error("❌ O formato dos PDFs não foi reconhecido. A extração resultou em zero linhas.")
+                st.write(f"Linhas extraídas TCPOS: {len(df_tcpos)}")
+                st.write(f"Linhas extraídas Opera: {len(df_opera)}")
                 st.stop()
             
             # 1. Limpeza das Chaves
@@ -119,7 +113,7 @@ if file_tcpos and file_opera:
             # 2. AGRUPAMENTO E SOMA (Agrupa lançamentos fracionados no Opera)
             df_opera_agrupado = df_opera.groupby(['Conta', 'Cupom'], as_index=False).agg({
                 'Valor_Opera': 'sum',
-                'Data_Opera': 'first' # Mantém a primeira data encontrada
+                'Data_Opera': 'first'
             })
             
             # 3. Cruzamento (Outer Join)
@@ -130,7 +124,7 @@ if file_tcpos and file_opera:
             so_opera = df_cruzamento[df_cruzamento['_merge'] == 'right_only'].copy()
             ambos = df_cruzamento[df_cruzamento['_merge'] == 'both'].copy()
             
-            # Tratamento de precisão de casas decimais para evitar falsas divergências
+            # Tratamento de precisão de casas decimais
             ambos['Valor_TCPOS'] = ambos['Valor_TCPOS'].round(2)
             ambos['Valor_Opera'] = ambos['Valor_Opera'].round(2)
             divergencia_valor = ambos[ambos['Valor_TCPOS'] != ambos['Valor_Opera']].copy()
@@ -162,7 +156,7 @@ if file_tcpos and file_opera:
             with aba3:
                 st.info("⚠️ Lançamentos encontrados em ambos, mas com **valores diferentes**.")
                 if not divergencia_valor.empty:
-                    divergencia_valor['Diferença'] = divergencia_valor['Valor_TCPOS'] - divergencia_valor['Valor_Opera']
+                    divergencia_valor['Diferença'] = (divergencia_valor['Valor_TCPOS'] - divergencia_valor['Valor_Opera']).round(2)
                     st.dataframe(divergencia_valor[['Conta', 'Cupom', 'Valor_TCPOS', 'Valor_Opera', 'Diferença']], use_container_width=True)
                 else:
                     st.success("Todos os valores bateram perfeitamente!")
