@@ -14,7 +14,7 @@ st.markdown("Faça o upload dos relatórios em PDF para cruzar os cupons e ident
 @st.cache_data
 def extrair_tcpos(arquivo_pdf):
     # Molde Regex para o TCPOS
-    padrao_linha = re.compile(r"^(\d{2}:\d{2})\s+(\d+)\s+(\d+)\s+(\d+)\s+\$([\d\.,]+)\s+(.*?)\s+(\d{44})$")
+    padrao_linha = re.compile(r"^(\d{2}:\d{2})\s+(\d+)\s+(?P<cupom>\d+)\s+(?P<conta>\d+)\s+\$(?P<valor>[\d\.,]+)\s+(.*?)\s+(\d{44})$")
     dados = []
     
     with pdfplumber.open(arquivo_pdf) as pdf:
@@ -27,19 +27,19 @@ def extrair_tcpos(arquivo_pdf):
                     if match:
                         dados.append({
                             "Hora_TCPOS": match.group(1),
-                            "Serie": match.group(2),
-                            "Cupom": str(match.group(3)),  # Forçado como string para a chave
-                            "Conta": str(match.group(4)),  # Forçado como string para a chave
-                            "Valor_TCPOS": float(match.group(5).replace(',', '')),
-                            "Operador": match.group(6).strip(),
-                            "ChaveNF": match.group(7)
+                            "Cupom": str(match.group('cupom')),
+                            "Conta": str(match.group('conta')),
+                            "Valor_TCPOS": float(match.group('valor').replace(',', '')),
+                            "Operador": match.group(6).strip()
                         })
     return pd.DataFrame(dados)
 
 @st.cache_data
 def extrair_opera(arquivo_pdf):
-    # Molde Regex para o Opera
-    padrao_linha = re.compile(r"^(\d{2}/\d{2}/\d{2}).*?(?P<conta>\d+)\s+-\s+Serie.*?(?:NF:)?(?P<cupom>\d+).*?BRL\s+(?P<valor>[\d\.,]+)")
+    # Molde Regex ajustado para pegar o CHECK# (Conta) e o NF: (Cupom) e o valor no final da linha
+    # Exemplo alvo: 23/07/26 ... CHECK# 1146 - Serie:2 - NF:7129 ... BRL 8.00
+    
+    # Vamos usar uma abordagem mais flexível para ler o texto do Opera linha a linha
     dados = []
     
     with pdfplumber.open(arquivo_pdf) as pdf:
@@ -48,14 +48,37 @@ def extrair_opera(arquivo_pdf):
             if texto:
                 for linha in texto.split('\n'):
                     linha = linha.strip()
-                    match = padrao_linha.search(linha)
-                    if match:
-                        dados.append({
-                            "Data_Opera": match.group(1),
-                            "Conta": str(match.group('conta')), # Forçado como string para a chave
-                            "Cupom": str(match.group('cupom')), # Forçado como string para a chave
-                            "Valor_Opera": float(match.group('valor').replace(',', ''))
-                        })
+                    
+                    # Procura por linhas que tenham a data no início, o código BRL e um valor
+                    if re.match(r"^\d{2}/\d{2}/\d{2}", linha) and "BRL" in linha:
+                        
+                        # Extrai a Conta (após CHECK# ou no início da string de referência)
+                        conta_match = re.search(r"(?:CHECK#\s*|^)(?P<conta>\d+)\s*-\s*Serie", linha)
+                        
+                        # Extrai o Cupom (após NF:)
+                        cupom_match = re.search(r"NF:\s*(?P<cupom>\d+)", linha)
+                        
+                        # Extrai o Valor (após BRL)
+                        valor_match = re.search(r"BRL\s+(?P<valor>[\d\.,]+)", linha)
+                        
+                        # Extrai a Data
+                        data_match = re.match(r"^(\d{2}/\d{2}/\d{2})", linha)
+                        
+                        if conta_match and cupom_match and valor_match:
+                            # Para casos onde o NF traz o ano grudado (ex: 71292026072), pegamos apenas os primeiros digitos
+                            cupom_bruto = cupom_match.group('cupom')
+                            if len(cupom_bruto) > 6 and "2026" in cupom_bruto:
+                                cupom_limpo = cupom_bruto.split("2026")[0]
+                            else:
+                                cupom_limpo = cupom_bruto
+
+                            dados.append({
+                                "Data_Opera": data_match.group(1) if data_match else "",
+                                "Conta": str(conta_match.group('conta')),
+                                "Cupom": str(cupom_limpo),
+                                "Valor_Opera": float(valor_match.group('valor').replace(',', ''))
+                            })
+                            
     return pd.DataFrame(dados)
 
 
@@ -76,39 +99,45 @@ with col2:
 if file_tcpos and file_opera:
     st.markdown("---")
     
-    # Botão para iniciar o processamento
     if st.button("🔍 Iniciar Conferência", type="primary", use_container_width=True):
         
         with st.spinner("Lendo PDFs e cruzando as informações..."):
             
-            # Extraindo dados
             df_tcpos = extrair_tcpos(file_tcpos)
             df_opera = extrair_opera(file_opera)
             
-            # Verificação de segurança (se os PDFs vieram vazios ou o regex não pegou)
             if df_tcpos.empty or df_opera.empty:
-                st.error("❌ Não foi possível extrair dados de um dos PDFs. Verifique se os arquivos estão no formato correto.")
+                st.error("❌ Não foi possível extrair dados de um dos PDFs. Verifique o formato.")
                 st.stop()
             
-            # Garantindo que as chaves sejam strings limpas antes do merge
+            # 1. Limpeza das Chaves
             df_tcpos['Conta'] = df_tcpos['Conta'].astype(str).str.strip()
             df_tcpos['Cupom'] = df_tcpos['Cupom'].astype(str).str.strip()
             df_opera['Conta'] = df_opera['Conta'].astype(str).str.strip()
             df_opera['Cupom'] = df_opera['Cupom'].astype(str).str.strip()
             
-            # Fazendo o cruzamento (Outer Join)
-            df_cruzamento = pd.merge(df_tcpos, df_opera, on=['Conta', 'Cupom'], how='outer', indicator=True)
+            # 2. AGRUPAMENTO E SOMA (Agrupa lançamentos fracionados no Opera)
+            df_opera_agrupado = df_opera.groupby(['Conta', 'Cupom'], as_index=False).agg({
+                'Valor_Opera': 'sum',
+                'Data_Opera': 'first' # Mantém a primeira data encontrada
+            })
             
-            # Filtrando as divergências
+            # 3. Cruzamento (Outer Join)
+            df_cruzamento = pd.merge(df_tcpos, df_opera_agrupado, on=['Conta', 'Cupom'], how='outer', indicator=True)
+            
+            # 4. Filtros
             so_tcpos = df_cruzamento[df_cruzamento['_merge'] == 'left_only'].copy()
             so_opera = df_cruzamento[df_cruzamento['_merge'] == 'right_only'].copy()
             ambos = df_cruzamento[df_cruzamento['_merge'] == 'both'].copy()
-            divergencia_valor = ambos[ambos['Valor_TCPOS'] != ambos['Valor_Opera']]
+            
+            # Tratamento de precisão de casas decimais para evitar falsas divergências
+            ambos['Valor_TCPOS'] = ambos['Valor_TCPOS'].round(2)
+            ambos['Valor_Opera'] = ambos['Valor_Opera'].round(2)
+            divergencia_valor = ambos[ambos['Valor_TCPOS'] != ambos['Valor_Opera']].copy()
             
             # --- EXIBIÇÃO DOS RESULTADOS ---
             st.success("✅ Cruzamento finalizado com sucesso!")
             
-            # Criação de abas para organizar a tela
             aba1, aba2, aba3, aba4 = st.tabs([
                 f"Faltam no Opera ({len(so_tcpos)})", 
                 f"Sobrando no Opera ({len(so_opera)})", 
@@ -133,13 +162,12 @@ if file_tcpos and file_opera:
             with aba3:
                 st.info("⚠️ Lançamentos encontrados em ambos, mas com **valores diferentes**.")
                 if not divergencia_valor.empty:
-                    # Calcula a diferença para facilitar a visualização
                     divergencia_valor['Diferença'] = divergencia_valor['Valor_TCPOS'] - divergencia_valor['Valor_Opera']
                     st.dataframe(divergencia_valor[['Conta', 'Cupom', 'Valor_TCPOS', 'Valor_Opera', 'Diferença']], use_container_width=True)
                 else:
                     st.success("Todos os valores bateram perfeitamente!")
                     
             with aba4:
-                st.success(f"✅ {len(ambos) - len(divergencia_valor)} lançamentos conciliados com sucesso (mesma conta, cupom e valor).")
+                st.success(f"✅ {len(ambos) - len(divergencia_valor)} lançamentos conciliados com sucesso (mesma conta, cupom e valor somado).")
                 casados_perfeitos = ambos[ambos['Valor_TCPOS'] == ambos['Valor_Opera']]
                 st.dataframe(casados_perfeitos[['Conta', 'Cupom', 'Valor_TCPOS', 'Valor_Opera']], use_container_width=True)
