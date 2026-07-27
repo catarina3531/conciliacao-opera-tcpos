@@ -3,13 +3,12 @@ import pandas as pd
 import pdfplumber
 import re
 
-# Configuração inicial da página
 st.set_page_config(page_title="Conciliação TCPOS x Opera", page_icon="📊", layout="wide")
 
 st.title("📊 Conciliação Diária: TCPOS vs Opera")
 st.markdown("Faça o upload dos relatórios em PDF para cruzar os cupons e identificar divergências.")
 
-# --- FUNÇÕES DE EXTRAÇÃO MELHORADAS ---
+# --- FUNÇÕES DE EXTRAÇÃO ---
 
 @st.cache_data
 def extrair_tcpos(arquivo_pdf):
@@ -20,10 +19,8 @@ def extrair_tcpos(arquivo_pdf):
             if texto_pagina:
                 texto_completo += " " + texto_pagina
                 
-    # Remove quebras de linha para criar um texto único e contínuo
     texto_limpo = re.sub(r'\s+', ' ', texto_completo)
     
-    # Molde à prova de falhas: aceita o "$" antes ou depois do valor, e ignora espaços extras
     padrao = re.compile(r"(?P<hora>\d{2}:\d{2})\s+(?P<serie>\d+)\s+(?P<cupom>\d+)\s+(?P<conta>\d+)\s+[\$\s]*(?P<valor>\d+[\.,]\d{2})[\$\s]+(?P<operador>.*?)\s+(?P<chave>\d{44})")
     
     dados = []
@@ -49,17 +46,21 @@ def extrair_opera(arquivo_pdf):
                 
     texto_limpo = re.sub(r'\s+', ' ', texto_completo)
     
-    # Molde focado no bloco final da transação do Opera, que sempre traz Conta, Cupom e BRL juntos
-    padrao = re.compile(r"(?P<conta>\d+)\s*-\s*Serie.*?NF:\s*(?P<cupom>\d+).*?BRL\s+(?P<valor>\d+[\.,]\d{2})")
+    # NOVO MOLDE RIGOROSO: O [^a-zA-Z]*? impede que a busca cruze palavras.
+    # Ele obriga o robô a pegar apenas a linha oficial de lançamento, ignorando a linha de "CHECK#"
+    padrao = re.compile(r"(?P<conta>\d+)\s*-\s*Serie[^a-zA-Z]*?NF:\s*(?P<cupom_sujo>\d+)[^a-zA-Z]*?BRL\s+(?P<valor>\d+[\.,]\d{2})")
     
     dados = []
     for match in padrao.finditer(texto_limpo):
-        cupom_bruto = match.group('cupom')
+        cupom_bruto = match.group('cupom_sujo')
         
-        # O Opera às vezes cola o ano "2026" no número do cupom. Isso limpa o excesso.
-        if len(cupom_bruto) > 6 and "202" in cupom_bruto:
-            idx = cupom_bruto.find("202")
-            cupom_limpo = cupom_bruto[:idx]
+        # Inteligência para desgrudar o ano (2026) caso ele venha colado no número do cupom
+        if len(cupom_bruto) >= 8:
+            match_ano = re.search(r'(202\d)', cupom_bruto)
+            if match_ano and match_ano.start() > 0:
+                cupom_limpo = cupom_bruto[:match_ano.start()]
+            else:
+                cupom_limpo = cupom_bruto
         else:
             cupom_limpo = cupom_bruto
             
@@ -67,7 +68,7 @@ def extrair_opera(arquivo_pdf):
             "Conta": str(match.group('conta')),
             "Cupom": str(cupom_limpo),
             "Valor_Opera": float(match.group('valor').replace(',', '')),
-            "Data_Opera": "Consta no PDF" # Mantido para não quebrar a tabela visual
+            "Data_Opera": "Consta no PDF"
         })
         
     return pd.DataFrame(dados)
@@ -97,34 +98,32 @@ if file_tcpos and file_opera:
             df_tcpos = extrair_tcpos(file_tcpos)
             df_opera = extrair_opera(file_opera)
             
-            # Verificação de extração
             if df_tcpos.empty or df_opera.empty:
                 st.error("❌ O formato dos PDFs não foi reconhecido. A extração resultou em zero linhas.")
                 st.write(f"Linhas extraídas TCPOS: {len(df_tcpos)}")
                 st.write(f"Linhas extraídas Opera: {len(df_opera)}")
                 st.stop()
             
-            # 1. Limpeza das Chaves
+            # Limpeza das Chaves
             df_tcpos['Conta'] = df_tcpos['Conta'].astype(str).str.strip()
             df_tcpos['Cupom'] = df_tcpos['Cupom'].astype(str).str.strip()
             df_opera['Conta'] = df_opera['Conta'].astype(str).str.strip()
             df_opera['Cupom'] = df_opera['Cupom'].astype(str).str.strip()
             
-            # 2. AGRUPAMENTO E SOMA (Agrupa lançamentos fracionados no Opera)
+            # AGRUPAMENTO E SOMA
             df_opera_agrupado = df_opera.groupby(['Conta', 'Cupom'], as_index=False).agg({
                 'Valor_Opera': 'sum',
                 'Data_Opera': 'first'
             })
             
-            # 3. Cruzamento (Outer Join)
+            # Cruzamento (Outer Join)
             df_cruzamento = pd.merge(df_tcpos, df_opera_agrupado, on=['Conta', 'Cupom'], how='outer', indicator=True)
             
-            # 4. Filtros
             so_tcpos = df_cruzamento[df_cruzamento['_merge'] == 'left_only'].copy()
             so_opera = df_cruzamento[df_cruzamento['_merge'] == 'right_only'].copy()
             ambos = df_cruzamento[df_cruzamento['_merge'] == 'both'].copy()
             
-            # Tratamento de precisão de casas decimais
+            # Tratamento de precisão
             ambos['Valor_TCPOS'] = ambos['Valor_TCPOS'].round(2)
             ambos['Valor_Opera'] = ambos['Valor_Opera'].round(2)
             divergencia_valor = ambos[ambos['Valor_TCPOS'] != ambos['Valor_Opera']].copy()
