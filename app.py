@@ -6,7 +6,7 @@ import re
 st.set_page_config(page_title="Conciliação TCPOS x Opera", page_icon="📊", layout="wide")
 
 st.title("📊 Conciliação Diária: TCPOS vs Opera")
-st.markdown("Faça o upload dos relatórios em **PDF** para cruzar os cupons de forma automática.")
+st.markdown("Faça o upload dos relatórios em **PDF** para iniciar a conferência.")
 
 # --- INTERFACE DE UPLOAD ---
 st.markdown("---")
@@ -21,7 +21,7 @@ with col2:
     file_opera = st.file_uploader("Anexe o PDF do Opera", type=["pdf"], key="opera")
 
 
-# --- FUNÇÕES DE EXTRAÇÃO EM PDF ---
+# --- FUNÇÕES DE EXTRAÇÃO SEGURAS ---
 
 @st.cache_data
 def extrair_tcpos_pdf(arquivo_pdf):
@@ -32,11 +32,8 @@ def extrair_tcpos_pdf(arquivo_pdf):
             if texto:
                 for linha in texto.split('\n'):
                     linha = linha.strip()
-                    # Procura linhas que contenham dados de cupom e valores no formato do TCPOS
-                    # Exemplo esperado na linha: Hora | Serie | Cupom | Conta | Valor | ... | Chave NF
                     partes = linha.split()
                     if len(partes) >= 6:
-                        # Tenta identificar valores com $ e chaves longas de NF
                         for i, parte in enumerate(partes):
                             if parte.startswith('$'):
                                 try:
@@ -64,17 +61,14 @@ def extrair_opera_pdf(arquivo_pdf):
             if texto:
                 for linha in texto.split('\n'):
                     linha = linha.strip()
-                    # Procura linhas do Opera que contenham a estrutura de NF e BRL
                     if "NF:" in linha and "BRL" in linha:
                         try:
-                            # Extrai a conta (Check No.) e o cupom após NF:
                             match_nf = re.search(r"NF:\s*(\d+)", linha)
                             match_conta = re.search(r"(\d+)\s*-\s*Serie", linha)
                             match_valor = re.search(r"BRL\s*(-)?\s*([\d\.,]+)", linha)
                             
                             if match_nf and match_valor:
                                 cupom_sujo = match_nf.group(1)
-                                # Limpa o ano grudado caso venha no número da nota
                                 if len(cupom_sujo) >= 8 and "202" in cupom_sujo:
                                     idx = cupom_sujo.find("202")
                                     cupom = cupom_sujo[:idx]
@@ -112,10 +106,8 @@ if file_tcpos and file_opera:
                 st.error("❌ Não foi possível extrair dados de um dos PDFs. Verifique se os arquivos correspondem aos relatórios corretos.")
                 st.stop()
             
-            # Limpeza e remoção de duplicadas caso o leitor pegue repetições
             df_tcpos = df_tcpos.drop_duplicates(subset=['Conta', 'Cupom'])
             
-            # Agrupamento e Soma no Opera (tratando múltiplos pagamentos e estornos negativos)
             df_opera_agrupado = df_opera.groupby(['Conta', 'Cupom'], as_index=False).agg({
                 'Valor_Opera': 'sum'
             })
@@ -123,7 +115,6 @@ if file_tcpos and file_opera:
             df_tcpos['Valor_TCPOS'] = df_tcpos['Valor_TCPOS'].round(2)
             df_opera_agrupado['Valor_Opera'] = df_opera_agrupado['Valor_Opera'].round(2)
             
-            # Cruzamento (Outer Join)
             df_cruzamento = pd.merge(df_tcpos, df_opera_agrupado, on=['Conta', 'Cupom'], how='outer', indicator=True)
             
             so_tcpos = df_cruzamento[df_cruzamento['_merge'] == 'left_only'].copy()
@@ -134,7 +125,6 @@ if file_tcpos and file_opera:
             
             st.success("✅ Cruzamento finalizado com sucesso!")
             
-            # --- ABAS DE RESULTADOS ---
             aba1, aba2, aba3, aba4 = st.tabs([
                 f"Faltam no Opera ({len(so_tcpos)})", 
                 f"Sobrando no Opera ({len(so_opera)})", 
