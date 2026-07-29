@@ -6,7 +6,7 @@ import re
 st.set_page_config(page_title="Conciliação TCPOS x Opera", page_icon="📊", layout="wide")
 
 st.title("📊 Conciliação Diária: TCPOS vs Opera")
-st.markdown("Faça o upload dos relatórios em **PDF** para iniciar a conferência.")
+st.markdown("Faça o upload dos relatórios em **PDF** para cruzar os cupons.")
 
 # --- INTERFACE DE UPLOAD ---
 st.markdown("---")
@@ -21,7 +21,7 @@ with col2:
     file_opera = st.file_uploader("Anexe o PDF do Opera", type=["pdf"], key="opera")
 
 
-# --- FUNÇÕES DE EXTRAÇÃO SEGURAS ---
+# --- FUNÇÕES DE EXTRAÇÃO COM SUPORTE A NEGATIVOS CORRETOS ---
 
 @st.cache_data
 def extrair_tcpos_pdf(arquivo_pdf):
@@ -35,9 +35,20 @@ def extrair_tcpos_pdf(arquivo_pdf):
                     partes = linha.split()
                     if len(partes) >= 6:
                         for i, parte in enumerate(partes):
-                            if parte.startswith('$'):
+                            # Procura valores que comecem com $ ou tenham parênteses (negativos)
+                            if parte.startswith('$') or ('(' in parte and ')' in parte):
                                 try:
-                                    valor = float(partes[i].replace('$', '').replace(',', ''))
+                                    val_limpo = partes[i].replace('$', '').replace(',', '')
+                                    # Trata valor negativo entre parênteses ex: (10.00)
+                                    is_negativo = False
+                                    if '(' in val_limpo and ')' in val_limpo:
+                                        is_negativo = True
+                                        val_limpo = val_limpo.replace('(', '').replace(')', '')
+                                    
+                                    valor = float(val_limpo)
+                                    if is_negativo:
+                                        valor = -valor
+                                        
                                     conta = partes[i-1]
                                     cupom = partes[i-2]
                                     if conta.isdigit() and cupom.isdigit():
@@ -79,6 +90,7 @@ def extrair_opera_pdf(arquivo_pdf):
                                 
                                 val_str = match_valor.group(2).replace(',', '.')
                                 valor = float(val_str)
+                                # Opera usa sinal de menos (-) para negativos
                                 if match_valor.group(1) == '-':
                                     valor = -valor
                                     
@@ -103,7 +115,7 @@ if file_tcpos and file_opera:
             df_opera = extrair_opera_pdf(file_opera)
             
             if df_tcpos.empty or df_opera.empty:
-                st.error("❌ Não foi possível extrair dados de um dos PDFs. Verifique se os arquivos correspondem aos relatórios corretos.")
+                st.error("❌ Não foi possível extrair dados de um dos PDFs. Verifique os arquivos.")
                 st.stop()
             
             df_tcpos = df_tcpos.drop_duplicates(subset=['Conta', 'Cupom'])
@@ -123,8 +135,23 @@ if file_tcpos and file_opera:
             
             divergencia_val = ambos[ambos['Valor_TCPOS'] != ambos['Valor_Opera']].copy()
             
-            st.success("✅ Cruzamento finalizado com sucesso!")
+            # --- PAINEL DE TOTAIS (LOGO NA PRIMEIRA TELA) ---
+            st.markdown("---")
+            st.subheader("📌 Resumo Geral dos Totais")
             
+            total_tcpos_geral = df_tcpos['Valor_TCPOS'].sum()
+            total_opera_geral = df_opera_agrupado['Valor_Opera'].sum()
+            diferenca_geral = (total_opera_geral - total_tcpos_geral).round(2)
+            
+            col_m1, col_m2, col_m3 = st.columns(3)
+            col_m1.metric("Total TCPOS", f"R$ {total_tcpos_geral:,.2f}")
+            col_m2.metric("Total Opera", f"R$ {total_opera_geral:,.2f}")
+            col_m3.metric("Diferença (Opera - TCPOS)", f"R$ {diferenca_geral:,.2f}", delta_color="inverse")
+            
+            st.markdown("---")
+            st.success("✅ Cruzamento detalhado concluído!")
+            
+            # --- ABAS DE RESULTADOS ---
             aba1, aba2, aba3, aba4 = st.tabs([
                 f"Faltam no Opera ({len(so_tcpos)})", 
                 f"Sobrando no Opera ({len(so_opera)})", 
@@ -137,14 +164,14 @@ if file_tcpos and file_opera:
                 if not so_tcpos.empty:
                     st.dataframe(so_tcpos[['Conta', 'Cupom', 'Valor_TCPOS']], use_container_width=True)
                 else:
-                    st.success("Nenhuma pendência! Tudo do TCPOS subiu.")
+                    st.success("Nenhuma pendência!")
                     
             with aba2:
                 st.error("🚨 Lançamentos que estão no Opera, mas **NÃO** foram encontrados no TCPOS.")
                 if not so_opera.empty:
                     st.dataframe(so_opera[['Conta', 'Cupom', 'Valor_Opera']], use_container_width=True)
                 else:
-                    st.success("Nenhum lançamento fantasma no Opera.")
+                    st.success("Nenhum lançamento fantasma.")
 
             with aba3:
                 st.info("⚠️ Lançamentos em ambos, mas com **valores diferentes**.")
