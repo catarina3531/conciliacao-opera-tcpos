@@ -21,7 +21,7 @@ with col2:
     file_opera = st.file_uploader("Anexe o PDF do Opera", type=["pdf"], key="opera")
 
 
-# --- FUNÇÕES DE EXTRAÇÃO COM SUPORTE A NEGATIVOS CORRETOS ---
+# --- FUNÇÕES DE EXTRAÇÃO CORRIGIDAS ---
 
 @st.cache_data
 def extrair_tcpos_pdf(arquivo_pdf):
@@ -35,11 +35,9 @@ def extrair_tcpos_pdf(arquivo_pdf):
                     partes = linha.split()
                     if len(partes) >= 6:
                         for i, parte in enumerate(partes):
-                            # Procura valores que comecem com $ ou tenham parênteses (negativos)
                             if parte.startswith('$') or ('(' in parte and ')' in parte):
                                 try:
                                     val_limpo = partes[i].replace('$', '').replace(',', '')
-                                    # Trata valor negativo entre parênteses ex: (10.00)
                                     is_negativo = False
                                     if '(' in val_limpo and ')' in val_limpo:
                                         is_negativo = True
@@ -80,9 +78,16 @@ def extrair_opera_pdf(arquivo_pdf):
                             
                             if match_nf and match_valor:
                                 cupom_sujo = match_nf.group(1)
-                                if len(cupom_sujo) >= 8 and "202" in cupom_sujo:
-                                    idx = cupom_sujo.find("202")
-                                    cupom = cupom_sujo[:idx]
+                                
+                                # Limpeza inteligente: o cupom real geralmente tem até 6 ou 7 dígitos antes de grudar na data/ano
+                                # Se o número for muito longo (ex: 549202026...), pegamos os primeiros dígitos lógicos da NF
+                                if len(cupom_sujo) > 6:
+                                    # Procura onde começa a data (ex: 2026 ou 2025) colada na frente
+                                    match_data_grudada = re.search(r'(\d{4,6})(202\d.*)', cupom_sujo)
+                                    if match_data_grudada:
+                                        cupom = match_data_grudada.group(1)
+                                    else:
+                                        cupom = cupom_sujo[:6] # Limite seguro para o número do cupom
                                 else:
                                     cupom = cupom_sujo
                                     
@@ -90,7 +95,6 @@ def extrair_opera_pdf(arquivo_pdf):
                                 
                                 val_str = match_valor.group(2).replace(',', '.')
                                 valor = float(val_str)
-                                # Opera usa sinal de menos (-) para negativos
                                 if match_valor.group(1) == '-':
                                     valor = -valor
                                     
