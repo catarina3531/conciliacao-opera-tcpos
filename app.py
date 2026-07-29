@@ -14,14 +14,14 @@ col1, col2 = st.columns(2)
 
 with col1:
     st.subheader("🛒 Sistema TCPOS")
-    file_tcpos = st.file_uploader("Anexe o PDF do TCPOS", type=["pdf"], key="tcpos")
+    file_tcpos = st.file_uploader("Anexe o PDF du TCPOS", type=["pdf"], key="tcpos")
 
 with col2:
     st.subheader("🏨 Sistema Opera")
-    file_opera = st.file_uploader("Anexe o PDF do Opera", type=["pdf"], key="opera")
+    file_opera = st.file_uploader("Anexe o PDF du Opera", type=["pdf"], key="opera")
 
 
-# --- FUNÇÕES DE EXTRAÇÃO CORRIGIDAS ---
+# --- FUNÇÕES DE EXTRAÇÃO BLINDADAS ---
 
 @st.cache_data
 def extrair_tcpos_pdf(arquivo_pdf):
@@ -46,10 +46,20 @@ def extrair_tcpos_pdf(arquivo_pdf):
                                     valor = float(val_limpo)
                                     if is_negativo:
                                         valor = -valor
+                                    
+                                    # No TCPOS: O valor vem após a Conta e o Cupom.
+                                    # Geralmente: [Hora] [Serie] [Cupom] [Conta] [Valor]
+                                    # Vamos capturar os dois números imediatamente anteriores ao valor
+                                    val1 = partes[i-1]
+                                    val2 = partes[i-2]
+                                    
+                                    if val1.isdigit() and val2.isdigit():
+                                        # Identifica qual é o cupom (geralmente o menor número ou o que bate com o padrão de NF) e qual é a conta
+                                        # No TCPOS o cupom costuma vir primeiro que a conta ou vice-versa. 
+                                        # Baseado no seu print: Cupom = 55669, Conta = 19590 (onde Cupom vem antes da Conta)
+                                        cupom = val2
+                                        conta = val1
                                         
-                                    conta = partes[i-1]
-                                    cupom = partes[i-2]
-                                    if conta.isdigit() and cupom.isdigit():
                                         dados.append({
                                             "Conta": str(conta).strip(),
                                             "Cupom": str(cupom).strip(),
@@ -78,22 +88,18 @@ def extrair_opera_pdf(arquivo_pdf):
                             
                             if match_nf and match_valor:
                                 cupom_sujo = match_nf.group(1)
-                                
-                                # Limpeza inteligente: o cupom real geralmente tem até 6 ou 7 dígitos antes de grudar na data/ano
-                                # Se o número for muito longo (ex: 549202026...), pegamos os primeiros dígitos lógicos da NF
                                 if len(cupom_sujo) > 6:
-                                    # Procura onde começa a data (ex: 2026 ou 2025) colada na frente
                                     match_data_grudada = re.search(r'(\d{4,6})(202\d.*)', cupom_sujo)
                                     if match_data_grudada:
                                         cupom = match_data_grudada.group(1)
                                     else:
-                                        cupom = cupom_sujo[:6] # Limite seguro para o número do cupom
+                                        cupom = cupom_sujo[:6]
                                 else:
                                     cupom = cupom_sujo
                                     
                                 conta = match_conta.group(1) if match_conta else "0"
                                 
-                                val_str = match_valor.group(2).replace(',', '.')
+                                val_str = match_valor.group(2).replace(',', '')
                                 valor = float(val_str)
                                 if match_valor.group(1) == '-':
                                     valor = -valor
