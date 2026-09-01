@@ -64,32 +64,34 @@ def extrair_tcpos_pdf(arquivo_pdf):
     return pd.DataFrame(dados)
 
 
-# --- FUNÇÃO 2: LER OPERA (XLS/CSV INTELIGENTE) ---
+# --- FUNÇÃO 2: LER OPERA (XLS/CSV DIRETO NAS COLUNAS AB E AP) ---
 @st.cache_data
 def extrair_opera_planilha(arquivo_xls):
-    # Tenta ler como Excel, se falhar (por ser CSV ou texto disfarçado), lê como CSV/Texto
     try:
-        df_raw = pd.read_excel(arquivo_xls)
+        df_raw = pd.read_excel(arquivo_xls, header=None)
     except Exception:
         try:
             arquivo_xls.seek(0)
-            df_raw = pd.read_csv(arquivo_xls, sep=None, engine='python', encoding='latin1')
+            df_raw = pd.read_csv(arquivo_xls, sep=None, engine='python', encoding='latin1', header=None)
         except Exception as e:
-            st.error(f"Não foi possível ler o arquivo do Opera. Detalhe: {e}")
+            st.error(f"Erro ao ler o arquivo do Opera: {e}")
             return pd.DataFrame()
     
     dados = []
     
-    # Descobre dinamicamente onde estão as colunas contendo CHECK# / NF: e os valores
+    # No Excel: Coluna AB é o índice 28 e Coluna AP é o índice 41 (A=0, B=1 ... AB=28, AP=41)
+    col_ab_idx = 28 if df_raw.shape[1] > 28 else df_raw.shape[1] - 1
+    col_ap_idx = 41 if df_raw.shape[1] > 41 else df_raw.shape[1] - 1
+    
     for _, row in df_raw.iterrows():
         try:
-            # Junta o texto de todas as colunas da linha para varrer com segurança
-            linha_texto = " ".join([str(val) for val in row.values if pd.notna(val)])
+            texto_ab = str(row.iloc[col_ab_idx]) if pd.notna(row.iloc[col_ab_idx]) else ""
+            valor_bruto = row.iloc[col_ap_idx] if pd.notna(row.iloc[col_ap_idx]) else 0
             
             # Extrai a Conta após CHECK#
-            match_conta = re.search(r"CHECK#\s*(\d+)", linha_texto, re.IGNORECASE)
+            match_conta = re.search(r"CHECK#\s*(\d+)", texto_ab, re.IGNORECASE)
             # Extrai o Cupom após NF:
-            match_nf = re.search(r"NF:\s*(\d+)", linha_texto, re.IGNORECASE)
+            match_nf = re.search(r"NF:\s*(\d+)", texto_ab, re.IGNORECASE)
             
             if match_conta and match_nf:
                 conta = match_conta.group(1).strip()
@@ -105,12 +107,9 @@ def extrair_opera_planilha(arquivo_xls):
                 else:
                     cupom = cupom_sujo
                 
-                # Procura o valor monetário na linha (procurando o último ou penúltimo número decimal válido)
-                # Ou pega o valor da coluna AP caso exista
-                col_ap_idx = 41 if df_raw.shape[1] > 41 else df_raw.shape[1] - 1
-                valor_bruto = row.iloc[col_ap_idx] if pd.notna(row.iloc[col_ap_idx]) else 0
-                
-                valor_num = float(str(valor_bruto).replace(',', '.')) if str(valor_bruto).strip() != '' else 0.0
+                # Converte o valor da coluna AP para float numérico
+                valor_str = str(valor_bruto).replace('R$', '').strip().replace(',', '.')
+                valor_num = float(valor_str) if valor_str != '' else 0.0
                 
                 dados.append({
                     "Conta": conta,
@@ -128,17 +127,17 @@ if file_tcpos and file_opera:
     st.markdown("---")
     
     if st.button("🔍 Iniciar Conferência", type="primary", use_container_width=True):
-        with st.spinner("Lendo o PDF do TCPOS e o relatório do Opera..."):
+        with st.spinner("Lendo os dados e cruzando as informações..."):
             
             df_tcpos = extrair_tcpos_pdf(file_tcpos)
             df_opera = extrair_opera_planilha(file_opera)
             
             if df_tcpos.empty:
-                st.error("❌ O PDF do TCPOS não retornou dados. Verifique o arquivo.")
+                st.error("❌ O PDF do TCPOS não retornou dados.")
                 st.stop()
                 
             if df_opera.empty:
-                st.error("❌ O arquivo do Opera não retornou dados válidos.")
+                st.error("❌ A planilha do Opera não retornou dados válidos nas colunas esperadas.")
                 st.stop()
             
             df_tcpos = df_tcpos.drop_duplicates(subset=['Conta', 'Cupom'])
