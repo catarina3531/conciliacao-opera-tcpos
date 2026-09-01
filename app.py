@@ -79,7 +79,6 @@ def extrair_opera_planilha(arquivo_xls):
     
     dados = []
     
-    # Coluna AA = índice 26, Coluna AP = índice 41
     col_aa_idx = 26 if df_raw.shape[1] > 26 else df_raw.shape[1] - 1
     col_ap_idx = 41 if df_raw.shape[1] > 41 else df_raw.shape[1] - 1
     
@@ -91,7 +90,6 @@ def extrair_opera_planilha(arquivo_xls):
             texto_aa = str(row.iloc[col_aa_idx]) if pd.notna(row.iloc[col_aa_idx]) else ""
             valor_bruto = row.iloc[col_ap_idx] if pd.notna(row.iloc[col_ap_idx]) else 0
             
-            # Se a linha atual tiver dados na coluna AA, atualizamos a conta e o cupom ativos
             if texto_aa.strip() and texto_aa.strip().lower() != "nan":
                 match_conta = re.search(r"CHECK#\s*(\d+)", texto_aa, re.IGNORECASE)
                 match_nf = re.search(r"NF:\s*(\d+)", texto_aa, re.IGNORECASE)
@@ -109,11 +107,9 @@ def extrair_opera_planilha(arquivo_xls):
                     else:
                         cupom_ativo = cupom_sujo
 
-            # Converte o valor da coluna AP para float numérico
             valor_str = str(valor_bruto).replace('R$', '').strip().replace(',', '.')
             valor_num = float(valor_str) if valor_str != '' else 0.0
             
-            # Se houver valor numérico e tivermos uma conta/cupom ativos (herdados ou diretos), registramos
             if valor_num != 0.0 and conta_ativa and cupom_ativo:
                 dados.append({
                     "Conta": conta_ativa,
@@ -146,7 +142,6 @@ if file_tcpos and file_opera:
             
             df_tcpos = df_tcpos.drop_duplicates(subset=['Conta', 'Cupom'])
             
-            # Agrupamento rigoroso no Opera somando valores de linhas com a mesma Conta e Cupom
             df_opera_agrupado = df_opera.groupby(['Conta', 'Cupom'], as_index=False).agg({
                 'Valor_Opera': 'sum'
             })
@@ -154,7 +149,6 @@ if file_tcpos and file_opera:
             df_tcpos['Valor_TCPOS'] = df_tcpos['Valor_TCPOS'].round(2)
             df_opera_agrupado['Valor_Opera'] = df_opera_agrupado['Valor_Opera'].round(2)
             
-            # Cruzamento (Outer Join)
             df_cruzamento = pd.merge(df_tcpos, df_opera_agrupado, on=['Conta', 'Cupom'], how='outer', indicator=True)
             
             so_tcpos = df_cruzamento[df_cruzamento['_merge'] == 'left_only'].copy()
@@ -163,7 +157,17 @@ if file_tcpos and file_opera:
             
             divergencia_val = ambos[ambos['Valor_TCPOS'] != ambos['Valor_Opera']].copy()
             
-            # --- PAINEL DE TOTAIS ---
+            # --- CÁLCULO DOS TOTAIS DAS DIVERGÊNCIAS ---
+            total_so_tcpos = so_tcpos['Valor_TCPOS'].sum() if not so_tcpos.empty else 0.0
+            total_so_opera = so_opera['Valor_Opera'].sum() if not so_opera.empty else 0.0
+            
+            if not divergencia_val.empty:
+                divergencia_val['Diferença'] = (divergencia_val['Valor_TCPOS'] - divergencia_val['Valor_Opera']).round(2)
+                total_divergencia = divergencia_val['Diferença'].abs().sum()
+            else:
+                total_divergencia = 0.0
+
+            # --- PAINEL DE TOTAIS GERAIS ---
             st.markdown("---")
             st.subheader("📌 Resumo Geral dos Totais")
             
@@ -179,37 +183,36 @@ if file_tcpos and file_opera:
             st.markdown("---")
             st.success("✅ Cruzamento concluído com sucesso!")
             
-            # --- ABAS DE RESULTADOS ---
+            # --- ABAS DE RESULTADOS COM OS TOTAIS EM DESTAQUE ---
             aba1, aba2, aba3, aba4 = st.tabs([
-                f"Faltam no Opera ({len(so_tcpos)})", 
-                f"Sobrando no Opera ({len(so_opera)})", 
-                f"Divergência de Valor ({len(divergencia_val)})",
-                "Conciliados (OK)"
+                f"Faltam no Opera ({len(so_tcpos)}) — R$ {total_so_tcpos:,.2f}", 
+                f"Sobrando no Opera ({len(so_opera)}) — R$ {total_so_opera:,.2f}", 
+                f"Divergência de Valor ({len(divergencia_val)}) — R$ {total_divergencia:,.2f}",
+                f"Conciliados (OK) ({len(ambos) - len(divergencia_val)})"
             ])
             
             with aba1:
-                st.warning("🚨 Lançamentos que estão no TCPOS, mas **NÃO** constam no Opera.")
+                st.warning(f"🚨 Lançamentos que estão no TCPOS, mas **NÃO** constam no Opera. **Total: R$ {total_so_tcpos:,.2f}**")
                 if not so_tcpos.empty:
                     st.dataframe(so_tcpos[['Conta', 'Cupom', 'Valor_TCPOS']], use_container_width=True)
                 else:
                     st.success("Nenhuma pendência!")
                     
             with aba2:
-                st.error("🚨 Lançamentos que estão no Opera, mas **NÃO** foram encontrados no TCPOS.")
+                st.error(f"🚨 Lançamentos que estão no Opera, mas **NÃO** foram encontrados no TCPOS. **Total: R$ {total_so_opera:,.2f}**")
                 if not so_opera.empty:
                     st.dataframe(so_opera[['Conta', 'Cupom', 'Valor_Opera']], use_container_width=True)
                 else:
                     st.success("Nenhum lançamento fantasma.")
 
             with aba3:
-                st.info("⚠️ Lançamentos em ambos, mas com **valores diferentes**.")
+                st.info(f"⚠️ Lançamentos em ambos, mas com **valores diferentes**. **Soma das Diferenças: R$ {total_divergencia:,.2f}**")
                 if not divergencia_val.empty:
-                    divergencia_val['Diferença'] = (divergencia_val['Valor_TCPOS'] - divergencia_val['Valor_Opera']).round(2)
                     st.dataframe(divergencia_val[['Conta', 'Cupom', 'Valor_TCPOS', 'Valor_Opera', 'Diferença']], use_container_width=True)
                 else:
                     st.success("Nenhuma divergência de valores encontrada!")
                     
             with aba4:
-                st.success(f"✅ {len(ambos) - len(divergencia_val)} lançamentos conciliados perfeitamente.")
                 casados_perfeitos = ambos[ambos['Valor_TCPOS'] == ambos['Valor_Opera']]
+                st.success(f"✅ {len(casados_perfeitos)} lançamentos conciliados perfeitamente.")
                 st.dataframe(casados_perfeitos[['Conta', 'Cupom', 'Valor_TCPOS', 'Valor_Opera']], use_container_width=True)
