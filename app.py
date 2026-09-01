@@ -14,14 +14,14 @@ col1, col2 = st.columns(2)
 
 with col1:
     st.subheader("🛒 Sistema TCPOS")
-    file_tcpos = st.file_uploader("Anexe o PDF du TCPOS", type=["pdf"], key="tcpos")
+    file_tcpos = st.file_uploader("Anexe o PDF do TCPOS", type=["pdf"], key="tcpos")
 
 with col2:
     st.subheader("🏨 Sistema Opera")
-    file_opera = st.file_uploader("Anexe o PDF du Opera", type=["pdf"], key="opera")
+    file_opera = st.file_uploader("Anexe o PDF do Opera", type=["pdf"], key="opera")
 
 
-# --- FUNÇÕES DE EXTRAÇÃO BLINDADAS ---
+# --- FUNÇÕES DE EXTRAÇÃO CORRIGIDAS ---
 
 @st.cache_data
 def extrair_tcpos_pdf(arquivo_pdf):
@@ -47,16 +47,10 @@ def extrair_tcpos_pdf(arquivo_pdf):
                                     if is_negativo:
                                         valor = -valor
                                     
-                                    # No TCPOS: O valor vem após a Conta e o Cupom.
-                                    # Geralmente: [Hora] [Serie] [Cupom] [Conta] [Valor]
-                                    # Vamos capturar os dois números imediatamente anteriores ao valor
                                     val1 = partes[i-1]
                                     val2 = partes[i-2]
                                     
                                     if val1.isdigit() and val2.isdigit():
-                                        # Identifica qual é o cupom (geralmente o menor número ou o que bate com o padrão de NF) e qual é a conta
-                                        # No TCPOS o cupom costuma vir primeiro que a conta ou vice-versa. 
-                                        # Baseado no seu print: Cupom = 55669, Conta = 19590 (onde Cupom vem antes da Conta)
                                         cupom = val2
                                         conta = val1
                                         
@@ -74,38 +68,45 @@ def extrair_tcpos_pdf(arquivo_pdf):
 @st.cache_data
 def extrair_opera_pdf(arquivo_pdf):
     dados = []
+    conta_atual = "0"
     with pdfplumber.open(arquivo_pdf) as pdf:
         for pagina in pdf.pages:
             texto = pagina.extract_text()
             if texto:
                 for linha in texto.split('\n'):
                     linha = linha.strip()
-                    if "NF:" in linha and "BRL" in linha:
+                    
+                    # Captura o número da conta caso apareça na linha (Room No. ou Check No.)
+                    match_chk = re.search(r"(?:CHECK#|Room#)\s*(\d+)", linha)
+                    if match_chk:
+                        conta_atual = match_chk.group(1)
+                    
+                    # Tenta capturar o número da NF/Cupom se houver na linha
+                    match_nf = re.search(r"NF:\s*(\d+)", linha)
+                    cupom = "0"
+                    if match_nf:
+                        cupom_sujo = match_nf.group(1)
+                        if len(cupom_sujo) > 6:
+                            match_data_grudada = re.search(r'(\d{4,6})(202\d.*)', cupom_sujo)
+                            if match_data_grudada:
+                                cupom = match_data_grudada.group(1)
+                            else:
+                                cupom = cupom_sujo[:6]
+                        else:
+                            cupom = cupom_sujo
+
+                    # Captura TODOS os valores monetários em BRL da página para fechar exatamente com o Grand Total
+                    if "BRL" in linha:
                         try:
-                            match_nf = re.search(r"NF:\s*(\d+)", linha)
-                            match_conta = re.search(r"(\d+)\s*-\s*Serie", linha)
                             match_valor = re.search(r"BRL\s*(-)?\s*([\d\.,]+)", linha)
-                            
-                            if match_nf and match_valor:
-                                cupom_sujo = match_nf.group(1)
-                                if len(cupom_sujo) > 6:
-                                    match_data_grudada = re.search(r'(\d{4,6})(202\d.*)', cupom_sujo)
-                                    if match_data_grudada:
-                                        cupom = match_data_grudada.group(1)
-                                    else:
-                                        cupom = cupom_sujo[:6]
-                                else:
-                                    cupom = cupom_sujo
-                                    
-                                conta = match_conta.group(1) if match_conta else "0"
-                                
+                            if match_valor:
                                 val_str = match_valor.group(2).replace(',', '')
                                 valor = float(val_str)
                                 if match_valor.group(1) == '-':
                                     valor = -valor
                                     
                                 dados.append({
-                                    "Conta": str(conta).strip(),
+                                    "Conta": str(conta_atual).strip(),
                                     "Cupom": str(cupom).strip(),
                                     "Valor_Opera": valor
                                 })
@@ -145,7 +146,7 @@ if file_tcpos and file_opera:
             
             divergencia_val = ambos[ambos['Valor_TCPOS'] != ambos['Valor_Opera']].copy()
             
-            # --- PAINEL DE TOTAIS (LOGO NA PRIMEIRA TELA) ---
+            # --- PAINEL DE TOTAIS ---
             st.markdown("---")
             st.subheader("📌 Resumo Geral dos Totais")
             
