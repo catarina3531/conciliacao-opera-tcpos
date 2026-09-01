@@ -21,7 +21,7 @@ with col2:
     file_opera = st.file_uploader("Anexe o PDF do Opera", type=["pdf"], key="opera")
 
 
-# --- FUNÇÕES DE EXTRAÇÃO CORRIGIDAS ---
+# --- FUNÇÕES DE EXTRAÇÃO INTELIGENTES ---
 
 @st.cache_data
 def extrair_tcpos_pdf(arquivo_pdf):
@@ -68,35 +68,37 @@ def extrair_tcpos_pdf(arquivo_pdf):
 @st.cache_data
 def extrair_opera_pdf(arquivo_pdf):
     dados = []
-    conta_atual = "0"
     with pdfplumber.open(arquivo_pdf) as pdf:
         for pagina in pdf.pages:
             texto = pagina.extract_text()
             if texto:
-                for linha in texto.split('\n'):
+                linhas = texto.split('\n')
+                conta_ativa = None
+                cupom_ativo = None
+                
+                for linha in linhas:
                     linha = linha.strip()
                     
-                    # Captura o número da conta caso apareça na linha (Room No. ou Check No.)
+                    # Captura a conta da linha de referência Check No. ou Room No.
                     match_chk = re.search(r"(?:CHECK#|Room#)\s*(\d+)", linha)
                     if match_chk:
-                        conta_atual = match_chk.group(1)
+                        conta_ativa = match_chk.group(1)
                     
-                    # Tenta capturar o número da NF/Cupom se houver na linha
+                    # Captura a NF/Cupom da linha
                     match_nf = re.search(r"NF:\s*(\d+)", linha)
-                    cupom = "0"
                     if match_nf:
                         cupom_sujo = match_nf.group(1)
                         if len(cupom_sujo) > 6:
                             match_data_grudada = re.search(r'(\d{4,6})(202\d.*)', cupom_sujo)
                             if match_data_grudada:
-                                cupom = match_data_grudada.group(1)
+                                cupom_ativo = match_data_grudada.group(1)
                             else:
-                                cupom = cupom_sujo[:6]
+                                cupom_ativo = cupom_sujo[:6]
                         else:
-                            cupom = cupom_sujo
+                            cupom_ativo = cupom_sujo
 
-                    # Captura TODOS os valores monetários em BRL da página para fechar exatamente com o Grand Total
-                    if "BRL" in linha:
+                    # Se a linha tem BRL, associa ao cupom e conta correntes vigentes no bloco
+                    if "BRL" in linha and conta_ativa and cupom_ativo:
                         try:
                             match_valor = re.search(r"BRL\s*(-)?\s*([\d\.,]+)", linha)
                             if match_valor:
@@ -106,12 +108,13 @@ def extrair_opera_pdf(arquivo_pdf):
                                     valor = -valor
                                     
                                 dados.append({
-                                    "Conta": str(conta_atual).strip(),
-                                    "Cupom": str(cupom).strip(),
+                                    "Conta": str(conta_ativa).strip(),
+                                    "Cupom": str(cupom_ativo).strip(),
                                     "Valor_Opera": valor
                                 })
                         except Exception:
                             continue
+                            
     return pd.DataFrame(dados)
 
 
@@ -131,6 +134,7 @@ if file_tcpos and file_opera:
             
             df_tcpos = df_tcpos.drop_duplicates(subset=['Conta', 'Cupom'])
             
+            # Agrupamento exato por Conta e Cupom somando os lançamentos de débito/crédito
             df_opera_agrupado = df_opera.groupby(['Conta', 'Cupom'], as_index=False).agg({
                 'Valor_Opera': 'sum'
             })
