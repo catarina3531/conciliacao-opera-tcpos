@@ -21,7 +21,7 @@ with col2:
     file_opera = st.file_uploader("Anexe o PDF do Opera", type=["pdf"], key="opera")
 
 
-# --- FUNÇÕES DE EXTRAÇÃO INTELIGENTES ---
+# --- FUNÇÕES DE EXTRAÇÃO PRECISAS ---
 
 @st.cache_data
 def extrair_tcpos_pdf(arquivo_pdf):
@@ -73,33 +73,30 @@ def extrair_opera_pdf(arquivo_pdf):
             texto = pagina.extract_text()
             if texto:
                 linhas = texto.split('\n')
-                conta_ativa = None
-                cupom_ativo = None
+                conta_ativa = "0"
                 
                 for linha in linhas:
                     linha = linha.strip()
                     
-                    # Captura a conta da linha de referência Check No. ou Room No.
+                    # Captura a conta da linha
                     match_chk = re.search(r"(?:CHECK#|Room#)\s*(\d+)", linha)
                     if match_chk:
                         conta_ativa = match_chk.group(1)
                     
-                    # Captura a NF/Cupom da linha
+                    # Captura explícita da NF na linha
                     match_nf = re.search(r"NF:\s*(\d+)", linha)
-                    if match_nf:
-                        cupom_sujo = match_nf.group(1)
-                        if len(cupom_sujo) > 6:
-                            match_data_grudada = re.search(r'(\d{4,6})(202\d.*)', cupom_sujo)
-                            if match_data_grudada:
-                                cupom_ativo = match_data_grudada.group(1)
-                            else:
-                                cupom_ativo = cupom_sujo[:6]
-                        else:
-                            cupom_ativo = cupom_sujo
-
-                    # Se a linha tem BRL, associa ao cupom e conta correntes vigentes no bloco
-                    if "BRL" in linha and conta_ativa and cupom_ativo:
+                    if match_nf and "BRL" in linha:
                         try:
+                            cupom_sujo = match_nf.group(1)
+                            if len(cupom_sujo) > 6:
+                                match_data_grudada = re.search(r'(\d{4,6})(202\d.*)', cupom_sujo)
+                                if match_data_grudada:
+                                    cupom = match_data_grudada.group(1)
+                                else:
+                                    cupom = cupom_sujo[:6]
+                            else:
+                                cupom = cupom_sujo
+                            
                             match_valor = re.search(r"BRL\s*(-)?\s*([\d\.,]+)", linha)
                             if match_valor:
                                 val_str = match_valor.group(2).replace(',', '')
@@ -109,7 +106,7 @@ def extrair_opera_pdf(arquivo_pdf):
                                     
                                 dados.append({
                                     "Conta": str(conta_ativa).strip(),
-                                    "Cupom": str(cupom_ativo).strip(),
+                                    "Cupom": str(cupom).strip(),
                                     "Valor_Opera": valor
                                 })
                         except Exception:
@@ -134,7 +131,7 @@ if file_tcpos and file_opera:
             
             df_tcpos = df_tcpos.drop_duplicates(subset=['Conta', 'Cupom'])
             
-            # Agrupamento exato por Conta e Cupom somando os lançamentos de débito/crédito
+            # Agrupamento rigoroso por Conta e Cupom somando os lançamentos do Opera
             df_opera_agrupado = df_opera.groupby(['Conta', 'Cupom'], as_index=False).agg({
                 'Valor_Opera': 'sum'
             })
