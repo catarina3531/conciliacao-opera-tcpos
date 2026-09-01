@@ -64,7 +64,7 @@ def extrair_tcpos_pdf(arquivo_pdf):
     return pd.DataFrame(dados)
 
 
-# --- FUNÇÃO 2: LER OPERA (XLS/CSV DIRETO NAS COLUNAS AB E AP) ---
+# --- FUNÇÃO 2: LER OPERA (COLUNA AA E COLUNA AP) ---
 @st.cache_data
 def extrair_opera_planilha(arquivo_xls):
     try:
@@ -79,19 +79,20 @@ def extrair_opera_planilha(arquivo_xls):
     
     dados = []
     
-    # No Excel: Coluna AB é o índice 28 e Coluna AP é o índice 41 (A=0, B=1 ... AB=28, AP=41)
-    col_ab_idx = 28 if df_raw.shape[1] > 28 else df_raw.shape[1] - 1
+    # Coluna AA = índice 26, Coluna AP = índice 41
+    col_aa_idx = 26 if df_raw.shape[1] > 26 else df_raw.shape[1] - 1
     col_ap_idx = 41 if df_raw.shape[1] > 41 else df_raw.shape[1] - 1
     
     for _, row in df_raw.iterrows():
         try:
-            texto_ab = str(row.iloc[col_ab_idx]) if pd.notna(row.iloc[col_ab_idx]) else ""
+            texto_aa = str(row.iloc[col_aa_idx]) if pd.notna(row.iloc[col_aa_idx]) else ""
             valor_bruto = row.iloc[col_ap_idx] if pd.notna(row.iloc[col_ap_idx]) else 0
             
-            # Extrai a Conta após CHECK#
-            match_conta = re.search(r"CHECK#\s*(\d+)", texto_ab, re.IGNORECASE)
-            # Extrai o Cupom após NF:
-            match_nf = re.search(r"NF:\s*(\d+)", texto_ab, re.IGNORECASE)
+            # Varre a linha inteira para garantir que acha o CHECK# e a NF mesmo se houver pequenos deslocamentos
+            linha_texto = " ".join([str(val) for val in row.values if pd.notna(val)])
+            
+            match_conta = re.search(r"CHECK#\s*(\d+)", linha_texto, re.IGNORECASE)
+            match_nf = re.search(r"NF:\s*(\d+)", linha_texto, re.IGNORECASE)
             
             if match_conta and match_nf:
                 conta = match_conta.group(1).strip()
@@ -107,7 +108,7 @@ def extrair_opera_planilha(arquivo_xls):
                 else:
                     cupom = cupom_sujo
                 
-                # Converte o valor da coluna AP para float numérico
+                # Converte o valor da coluna AP para float numérico (suportando negativos se houver)
                 valor_str = str(valor_bruto).replace('R$', '').strip().replace(',', '.')
                 valor_num = float(valor_str) if valor_str != '' else 0.0
                 
