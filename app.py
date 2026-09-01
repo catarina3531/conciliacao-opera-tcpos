@@ -6,23 +6,22 @@ import re
 st.set_page_config(page_title="Conciliação TCPOS x Opera", page_icon="📊", layout="wide")
 
 st.title("📊 Conciliação Diária: TCPOS vs Opera")
-st.markdown("Faça o upload dos relatórios em **PDF** para cruzar os cupons.")
+st.markdown("Cruzamento oficial: **TCPOS (PDF)** vs **Opera (XLS)**.")
 
 # --- INTERFACE DE UPLOAD ---
 st.markdown("---")
 col1, col2 = st.columns(2)
 
 with col1:
-    st.subheader("🛒 Sistema TCPOS")
+    st.subheader("🛒 Sistema TCPOS (PDF)")
     file_tcpos = st.file_uploader("Anexe o PDF do TCPOS", type=["pdf"], key="tcpos")
 
 with col2:
-    st.subheader("🏨 Sistema Opera")
-    file_opera = st.file_uploader("Anexe o PDF do Opera", type=["pdf"], key="opera")
+    st.subheader("🏨 Sistema Opera (XLS / XLSX)")
+    file_opera = st.file_uploader("Anexe a planilha do Opera", type=["xlsx", "xls"], key="opera")
 
 
-# --- FUNÇÕES DE EXTRAÇÃO PRECISAS ---
-
+# --- FUNÇÃO 1: LER TCPOS (PDF) ---
 @st.cache_data
 def extrair_tcpos_pdf(arquivo_pdf):
     dados = []
@@ -65,53 +64,54 @@ def extrair_tcpos_pdf(arquivo_pdf):
     return pd.DataFrame(dados)
 
 
+# --- FUNÇÃO 2: LER OPERA (XLS) ---
 @st.cache_data
-def extrair_opera_pdf(arquivo_pdf):
+def extrair_opera_xls(arquivo_xls):
+    # Lê a planilha do Excel
+    df_raw = pd.read_excel(arquivo_xls)
+    
     dados = []
-    with pdfplumber.open(arquivo_pdf) as pdf:
-        for pagina in pdf.pages:
-            texto = pagina.extract_text()
-            if texto:
-                linhas = texto.split('\n')
-                conta_ativa = "0"
+    
+    # Identifica o índice da coluna V (V é a 22ª coluna, índice 21 no Python)
+    # Caso a sua planilha tenha outra estrutura, ajustamos pelo nome ou índice seguro
+    col_v_idx = 21 if df_raw.shape[1] > 21 else df_raw.shape[1] - 1
+    col_ap_idx = 41 if df_raw.shape[1] > 41 else df_raw.shape[1] - 1 # Coluna AP aproximada ou última se menor
+    
+    for _, row in df_raw.iterrows():
+        try:
+            texto_col_v = str(row.iloc[col_v_idx]) if pd.notna(row.iloc[col_v_idx]) else ""
+            valor_bruto = row.iloc[col_ap_idx] if pd.notna(row.iloc[col_ap_idx]) else 0
+            
+            # Extrai a Conta após CHECK#
+            match_conta = re.search(r"CHECK#\s*(\d+)", texto_col_v, re.IGNORECASE)
+            # Extrai o Cupom após NF:
+            match_nf = re.search(r"NF:\s*(\d+)", texto_col_v, re.IGNORECASE)
+            
+            if match_conta and match_nf:
+                conta = match_conta.group(1).strip()
+                cupom_sujo = match_nf.group(1).strip()
                 
-                for linha in linhas:
-                    linha = linha.strip()
-                    
-                    # Captura a conta da linha
-                    match_chk = re.search(r"(?:CHECK#|Room#)\s*(\d+)", linha)
-                    if match_chk:
-                        conta_ativa = match_chk.group(1)
-                    
-                    # Captura explícita da NF na linha
-                    match_nf = re.search(r"NF:\s*(\d+)", linha)
-                    if match_nf and "BRL" in linha:
-                        try:
-                            cupom_sujo = match_nf.group(1)
-                            if len(cupom_sujo) > 6:
-                                match_data_grudada = re.search(r'(\d{4,6})(202\d.*)', cupom_sujo)
-                                if match_data_grudada:
-                                    cupom = match_data_grudada.group(1)
-                                else:
-                                    cupom = cupom_sujo[:6]
-                            else:
-                                cupom = cupom_sujo
-                            
-                            match_valor = re.search(r"BRL\s*(-)?\s*([\d\.,]+)", linha)
-                            if match_valor:
-                                val_str = match_valor.group(2).replace(',', '')
-                                valor = float(val_str)
-                                if match_valor.group(1) == '-':
-                                    valor = -valor
-                                    
-                                dados.append({
-                                    "Conta": str(conta_ativa).strip(),
-                                    "Cupom": str(cupom).strip(),
-                                    "Valor_Opera": valor
-                                })
-                        except Exception:
-                            continue
-                            
+                # Limpeza caso o número da NF venha grudado com o ano/data
+                if len(cupom_sujo) > 6:
+                    match_data = re.search(r'(\d{4,6})(202\d.*)', cupom_sujo)
+                    if match_data:
+                        cupom = match_data.group(1)
+                    else:
+                        cupom = cupom_sujo[:6]
+                else:
+                    cupom = cupom_sujo
+                
+                # Converte o valor da coluna AP para float numérico de forma segura
+                valor_num = float(str(valor_bruto).replace(',', '.')) if valor_bruto != '' else 0.0
+                
+                dados.append({
+                    "Conta": conta,
+                    "Cupom": cupom,
+                    "Valor_Opera": valor_num
+                })
+        except Exception:
+            continue
+            
     return pd.DataFrame(dados)
 
 
@@ -120,18 +120,22 @@ if file_tcpos and file_opera:
     st.markdown("---")
     
     if st.button("🔍 Iniciar Conferência", type="primary", use_container_width=True):
-        with st.spinner("Lendo os PDFs e cruzando as informações..."):
+        with st.spinner("Lendo o PDF do TCPOS e a planilha do Opera..."):
             
             df_tcpos = extrair_tcpos_pdf(file_tcpos)
-            df_opera = extrair_opera_pdf(file_opera)
+            df_opera = extrair_opera_xls(file_opera)
             
-            if df_tcpos.empty or df_opera.empty:
-                st.error("❌ Não foi possível extrair dados de um dos PDFs. Verifique os arquivos.")
+            if df_tcpos.empty:
+                st.error("❌ O PDF do TCPOS não retornou dados. Verifique o arquivo.")
+                st.stop()
+                
+            if df_opera.empty:
+                st.error("❌ A planilha do Opera não retornou dados. Verifique se as colunas V e AP estão corretas.")
                 st.stop()
             
             df_tcpos = df_tcpos.drop_duplicates(subset=['Conta', 'Cupom'])
             
-            # Agrupamento rigoroso por Conta e Cupom somando os lançamentos do Opera
+            # Agrupamento rigoroso no Opera somando valores de linhas com a mesma Conta e Cupom
             df_opera_agrupado = df_opera.groupby(['Conta', 'Cupom'], as_index=False).agg({
                 'Valor_Opera': 'sum'
             })
@@ -139,6 +143,7 @@ if file_tcpos and file_opera:
             df_tcpos['Valor_TCPOS'] = df_tcpos['Valor_TCPOS'].round(2)
             df_opera_agrupado['Valor_Opera'] = df_opera_agrupado['Valor_Opera'].round(2)
             
+            # Cruzamento (Outer Join)
             df_cruzamento = pd.merge(df_tcpos, df_opera_agrupado, on=['Conta', 'Cupom'], how='outer', indicator=True)
             
             so_tcpos = df_cruzamento[df_cruzamento['_merge'] == 'left_only'].copy()
@@ -161,7 +166,7 @@ if file_tcpos and file_opera:
             col_m3.metric("Diferença (Opera - TCPOS)", f"R$ {diferenca_geral:,.2f}", delta_color="inverse")
             
             st.markdown("---")
-            st.success("✅ Cruzamento detalhado concluído!")
+            st.success("✅ Cruzamento via PDF + XLS concluído com sucesso!")
             
             # --- ABAS DE RESULTADOS ---
             aba1, aba2, aba3, aba4 = st.tabs([
