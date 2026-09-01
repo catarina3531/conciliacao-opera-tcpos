@@ -64,7 +64,7 @@ def extrair_tcpos_pdf(arquivo_pdf):
     return pd.DataFrame(dados)
 
 
-# --- FUNÇÃO 2: LER OPERA (COLUNA AA E COLUNA AP) ---
+# --- FUNÇÃO 2: LER OPERA COM HERANÇA DE LINHA (COLUNAS AA E AP) ---
 @st.cache_data
 def extrair_opera_planilha(arquivo_xls):
     try:
@@ -83,38 +83,41 @@ def extrair_opera_planilha(arquivo_xls):
     col_aa_idx = 26 if df_raw.shape[1] > 26 else df_raw.shape[1] - 1
     col_ap_idx = 41 if df_raw.shape[1] > 41 else df_raw.shape[1] - 1
     
+    conta_ativa = None
+    cupom_ativo = None
+    
     for _, row in df_raw.iterrows():
         try:
             texto_aa = str(row.iloc[col_aa_idx]) if pd.notna(row.iloc[col_aa_idx]) else ""
             valor_bruto = row.iloc[col_ap_idx] if pd.notna(row.iloc[col_ap_idx]) else 0
             
-            # Varre a linha inteira para garantir que acha o CHECK# e a NF mesmo se houver pequenos deslocamentos
-            linha_texto = " ".join([str(val) for val in row.values if pd.notna(val)])
-            
-            match_conta = re.search(r"CHECK#\s*(\d+)", linha_texto, re.IGNORECASE)
-            match_nf = re.search(r"NF:\s*(\d+)", linha_texto, re.IGNORECASE)
-            
-            if match_conta and match_nf:
-                conta = match_conta.group(1).strip()
-                cupom_sujo = match_nf.group(1).strip()
+            # Se a linha atual tiver dados na coluna AA, atualizamos a conta e o cupom ativos
+            if texto_aa.strip() and texto_aa.strip().lower() != "nan":
+                match_conta = re.search(r"CHECK#\s*(\d+)", texto_aa, re.IGNORECASE)
+                match_nf = re.search(r"NF:\s*(\d+)", texto_aa, re.IGNORECASE)
                 
-                # Limpeza caso o número da NF venha grudado com o ano/data
-                if len(cupom_sujo) > 6:
-                    match_data = re.search(r'(\d{4,6})(202\d.*)', cupom_sujo)
-                    if match_data:
-                        cupom = match_data.group(1)
+                if match_conta:
+                    conta_ativa = match_conta.group(1).strip()
+                if match_nf:
+                    cupom_sujo = match_nf.group(1).strip()
+                    if len(cupom_sujo) > 6:
+                        match_data = re.search(r'(\d{4,6})(202\d.*)', cupom_sujo)
+                        if match_data:
+                            cupom_ativo = match_data.group(1)
+                        else:
+                            cupom_ativo = cupom_sujo[:6]
                     else:
-                        cupom = cupom_sujo[:6]
-                else:
-                    cupom = cupom_sujo
-                
-                # Converte o valor da coluna AP para float numérico (suportando negativos se houver)
-                valor_str = str(valor_bruto).replace('R$', '').strip().replace(',', '.')
-                valor_num = float(valor_str) if valor_str != '' else 0.0
-                
+                        cupom_ativo = cupom_sujo
+
+            # Converte o valor da coluna AP para float numérico
+            valor_str = str(valor_bruto).replace('R$', '').strip().replace(',', '.')
+            valor_num = float(valor_str) if valor_str != '' else 0.0
+            
+            # Se houver valor numérico e tivermos uma conta/cupom ativos (herdados ou diretos), registramos
+            if valor_num != 0.0 and conta_ativa and cupom_ativo:
                 dados.append({
-                    "Conta": conta,
-                    "Cupom": cupom,
+                    "Conta": conta_ativa,
+                    "Cupom": cupom_ativo,
                     "Valor_Opera": valor_num
                 })
         except Exception:
