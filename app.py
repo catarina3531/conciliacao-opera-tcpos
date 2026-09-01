@@ -6,7 +6,7 @@ import re
 st.set_page_config(page_title="Conciliação TCPOS x Opera", page_icon="📊", layout="wide")
 
 st.title("📊 Conciliação Diária: TCPOS vs Opera")
-st.markdown("Cruzamento oficial: **TCPOS (PDF)** vs **Opera (XLS)**.")
+st.markdown("Cruzamento oficial: **TCPOS (PDF)** vs **Opera (XLS/CSV)**.")
 
 # --- INTERFACE DE UPLOAD ---
 st.markdown("---")
@@ -17,8 +17,8 @@ with col1:
     file_tcpos = st.file_uploader("Anexe o PDF do TCPOS", type=["pdf"], key="tcpos")
 
 with col2:
-    st.subheader("🏨 Sistema Opera (XLS / XLSX)")
-    file_opera = st.file_uploader("Anexe a planilha do Opera", type=["xlsx", "xls"], key="opera")
+    st.subheader("🏨 Sistema Opera (XLS / XLSX / CSV)")
+    file_opera = st.file_uploader("Anexe a planilha/relatório do Opera", type=["xlsx", "xls", "csv"], key="opera")
 
 
 # --- FUNÇÃO 1: LER TCPOS (PDF) ---
@@ -64,28 +64,32 @@ def extrair_tcpos_pdf(arquivo_pdf):
     return pd.DataFrame(dados)
 
 
-# --- FUNÇÃO 2: LER OPERA (XLS) ---
+# --- FUNÇÃO 2: LER OPERA (XLS/CSV INTELIGENTE) ---
 @st.cache_data
-def extrair_opera_xls(arquivo_xls):
-    # Lê a planilha do Excel
-    df_raw = pd.read_excel(arquivo_xls)
+def extrair_opera_planilha(arquivo_xls):
+    # Tenta ler como Excel, se falhar (por ser CSV ou texto disfarçado), lê como CSV/Texto
+    try:
+        df_raw = pd.read_excel(arquivo_xls)
+    except Exception:
+        try:
+            arquivo_xls.seek(0)
+            df_raw = pd.read_csv(arquivo_xls, sep=None, engine='python', encoding='latin1')
+        except Exception as e:
+            st.error(f"Não foi possível ler o arquivo do Opera. Detalhe: {e}")
+            return pd.DataFrame()
     
     dados = []
     
-    # Identifica o índice da coluna V (V é a 22ª coluna, índice 21 no Python)
-    # Caso a sua planilha tenha outra estrutura, ajustamos pelo nome ou índice seguro
-    col_v_idx = 21 if df_raw.shape[1] > 21 else df_raw.shape[1] - 1
-    col_ap_idx = 41 if df_raw.shape[1] > 41 else df_raw.shape[1] - 1 # Coluna AP aproximada ou última se menor
-    
+    # Descobre dinamicamente onde estão as colunas contendo CHECK# / NF: e os valores
     for _, row in df_raw.iterrows():
         try:
-            texto_col_v = str(row.iloc[col_v_idx]) if pd.notna(row.iloc[col_v_idx]) else ""
-            valor_bruto = row.iloc[col_ap_idx] if pd.notna(row.iloc[col_ap_idx]) else 0
+            # Junta o texto de todas as colunas da linha para varrer com segurança
+            linha_texto = " ".join([str(val) for val in row.values if pd.notna(val)])
             
             # Extrai a Conta após CHECK#
-            match_conta = re.search(r"CHECK#\s*(\d+)", texto_col_v, re.IGNORECASE)
+            match_conta = re.search(r"CHECK#\s*(\d+)", linha_texto, re.IGNORECASE)
             # Extrai o Cupom após NF:
-            match_nf = re.search(r"NF:\s*(\d+)", texto_col_v, re.IGNORECASE)
+            match_nf = re.search(r"NF:\s*(\d+)", linha_texto, re.IGNORECASE)
             
             if match_conta and match_nf:
                 conta = match_conta.group(1).strip()
@@ -101,8 +105,12 @@ def extrair_opera_xls(arquivo_xls):
                 else:
                     cupom = cupom_sujo
                 
-                # Converte o valor da coluna AP para float numérico de forma segura
-                valor_num = float(str(valor_bruto).replace(',', '.')) if valor_bruto != '' else 0.0
+                # Procura o valor monetário na linha (procurando o último ou penúltimo número decimal válido)
+                # Ou pega o valor da coluna AP caso exista
+                col_ap_idx = 41 if df_raw.shape[1] > 41 else df_raw.shape[1] - 1
+                valor_bruto = row.iloc[col_ap_idx] if pd.notna(row.iloc[col_ap_idx]) else 0
+                
+                valor_num = float(str(valor_bruto).replace(',', '.')) if str(valor_bruto).strip() != '' else 0.0
                 
                 dados.append({
                     "Conta": conta,
@@ -120,17 +128,17 @@ if file_tcpos and file_opera:
     st.markdown("---")
     
     if st.button("🔍 Iniciar Conferência", type="primary", use_container_width=True):
-        with st.spinner("Lendo o PDF do TCPOS e a planilha do Opera..."):
+        with st.spinner("Lendo o PDF do TCPOS e o relatório do Opera..."):
             
             df_tcpos = extrair_tcpos_pdf(file_tcpos)
-            df_opera = extrair_opera_xls(file_opera)
+            df_opera = extrair_opera_planilha(file_opera)
             
             if df_tcpos.empty:
                 st.error("❌ O PDF do TCPOS não retornou dados. Verifique o arquivo.")
                 st.stop()
                 
             if df_opera.empty:
-                st.error("❌ A planilha do Opera não retornou dados. Verifique se as colunas V e AP estão corretas.")
+                st.error("❌ O arquivo do Opera não retornou dados válidos.")
                 st.stop()
             
             df_tcpos = df_tcpos.drop_duplicates(subset=['Conta', 'Cupom'])
@@ -166,7 +174,7 @@ if file_tcpos and file_opera:
             col_m3.metric("Diferença (Opera - TCPOS)", f"R$ {diferenca_geral:,.2f}", delta_color="inverse")
             
             st.markdown("---")
-            st.success("✅ Cruzamento via PDF + XLS concluído com sucesso!")
+            st.success("✅ Cruzamento concluído com sucesso!")
             
             # --- ABAS DE RESULTADOS ---
             aba1, aba2, aba3, aba4 = st.tabs([
