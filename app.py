@@ -20,38 +20,49 @@ with col2:
     file_opera = st.file_uploader("Anexe o relatório do Opera", type=["xlsx", "xls", "csv"], key="opera")
 
 
-# --- FUNÇÃO 1: LER TCPOS (PLANILHA) ---
+# --- FUNÇÃO 1: LER TCPOS (BUSCA INTELIGENTE DE ABAS) ---
 @st.cache_data
 def extrair_tcpos_planilha(arquivo_tcpos):
+    df_raw = None
+    
+    # Tenta ler a aba exata "NFC-e Emitidas", se falhar, lê a primeira aba do arquivo
     try:
-        df_raw = pd.read_excel(arquivo_tcpos, header=None)
+        df_raw = pd.read_excel(arquivo_tcpos, sheet_name="NFC-e Emitidas", header=None)
     except Exception:
         try:
             arquivo_tcpos.seek(0)
-            df_raw = pd.read_csv(arquivo_tcpos, sep=None, engine='python', encoding='latin1', header=None)
-        except Exception as e:
-            st.error(f"Erro ao ler o arquivo do TCPOS: {e}")
-            return pd.DataFrame()
+            df_raw = pd.read_excel(arquivo_tcpos, sheet_name=0, header=None)
+        except Exception:
+            try:
+                arquivo_tcpos.seek(0)
+                df_raw = pd.read_csv(arquivo_tcpos, sep=None, engine='python', encoding='latin1', header=None)
+            except Exception as e:
+                st.error(f"Erro ao ler o arquivo do TCPOS: {e}")
+                return pd.DataFrame()
     
+    if df_raw is None or df_raw.empty:
+        return pd.DataFrame()
+
     dados = []
     
-    # Mapeamento solicitado: Coluna B (índice 1) = Cupom, Coluna D (índice 3) = Conta, Coluna I (índice 8) = Valor
+    # Coluna B (índice 1) = Cupom, Coluna D (índice 3) = Conta, Coluna I (índice 8) = Valor
     col_cupom_idx = 1
     col_conta_idx = 3
     col_valor_idx = 8
     
-    for _, row in df_raw.iterrows():
+    for idx, row in df_raw.iterrows():
+        if idx == 0:
+            continue # Pula o cabeçalho
+            
         try:
             val_cupom = str(row.iloc[col_cupom_idx]) if pd.notna(row.iloc[col_cupom_idx]) else ""
             val_conta = str(row.iloc[col_conta_idx]) if pd.notna(row.iloc[col_conta_idx]) else ""
             val_valor = row.iloc[col_valor_idx] if pd.notna(row.iloc[col_valor_idx]) else 0
             
-            # Limpa e valida se são números válidos
             cupom = val_cupom.replace('.0', '').strip()
             conta = val_conta.replace('.0', '').strip()
             
             if cupom.isdigit() and conta.isdigit():
-                # Tratamento de valor monetário (suportando negativos/estornos)
                 valor_str = str(val_valor).replace('R$', '').strip().replace(',', '.')
                 is_negativo = False
                 if '(' in valor_str and ')' in valor_str:
@@ -225,4 +236,3 @@ if file_tcpos and file_opera:
                 casados_perfeitos = ambos[ambos['Valor_TCPOS'] == ambos['Valor_Opera']]
                 st.success(f"✅ {len(casados_perfeitos)} lançamentos conciliados perfeitamente.")
                 st.dataframe(casados_perfeitos[['Conta', 'Cupom', 'Valor_TCPOS', 'Valor_Opera']], use_container_width=True)
-    
