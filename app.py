@@ -225,3 +225,4 @@ if file_tcpos and file_opera:
                 casados_perfeitos = ambos[ambos['Valor_TCPOS'] == ambos['Valor_Opera']]
                 st.success(f"✅ {len(casados_perfeitos)} lançamentos conciliados perfeitamente.")
                 st.dataframe(casados_perfeitos[['Conta', 'Cupom', 'Valor_TCPOS', 'Valor_Opera']], use_container_width=True)
+    
