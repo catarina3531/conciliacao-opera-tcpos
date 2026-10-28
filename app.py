@@ -1,70 +1,79 @@
 import streamlit as st
 import pandas as pd
-import pdfplumber
 import re
 
 st.set_page_config(page_title="Conciliação TCPOS x Opera", page_icon="📊", layout="wide")
 
 st.title("📊 Conciliação Diária: TCPOS vs Opera")
-st.markdown("Cruzamento oficial: **TCPOS (PDF)** vs **Opera (XLS/CSV)**.")
+st.markdown("Cruzamento oficial: **TCPOS (Planilha)** vs **Opera (Planilha)**.")
 
 # --- INTERFACE DE UPLOAD ---
 st.markdown("---")
 col1, col2 = st.columns(2)
 
 with col1:
-    st.subheader("🛒 Sistema TCPOS (PDF)")
-    file_tcpos = st.file_uploader("Anexe o PDF do TCPOS", type=["pdf"], key="tcpos")
+    st.subheader("🛒 Sistema TCPOS (Planilha)")
+    file_tcpos = st.file_uploader("Anexe o relatório do TCPOS", type=["xlsx", "xls", "csv"], key="tcpos")
 
 with col2:
-    st.subheader("🏨 Sistema Opera (XLS / XLSX / CSV)")
-    file_opera = st.file_uploader("Anexe a planilha/relatório do Opera", type=["xlsx", "xls", "csv"], key="opera")
+    st.subheader("🏨 Sistema Opera (Planilha)")
+    file_opera = st.file_uploader("Anexe o relatório do Opera", type=["xlsx", "xls", "csv"], key="opera")
 
 
-# --- FUNÇÃO 1: LER TCPOS (PDF) ---
+# --- FUNÇÃO 1: LER TCPOS (PLANILHA) ---
 @st.cache_data
-def extrair_tcpos_pdf(arquivo_pdf):
+def extrair_tcpos_planilha(arquivo_tcpos):
+    try:
+        df_raw = pd.read_excel(arquivo_tcpos, header=None)
+    except Exception:
+        try:
+            arquivo_tcpos.seek(0)
+            df_raw = pd.read_csv(arquivo_tcpos, sep=None, engine='python', encoding='latin1', header=None)
+        except Exception as e:
+            st.error(f"Erro ao ler o arquivo do TCPOS: {e}")
+            return pd.DataFrame()
+    
     dados = []
-    with pdfplumber.open(arquivo_pdf) as pdf:
-        for pagina in pdf.pages:
-            texto = pagina.extract_text()
-            if texto:
-                for linha in texto.split('\n'):
-                    linha = linha.strip()
-                    partes = linha.split()
-                    if len(partes) >= 6:
-                        for i, parte in enumerate(partes):
-                            if parte.startswith('$') or ('(' in parte and ')' in parte):
-                                try:
-                                    val_limpo = partes[i].replace('$', '').replace(',', '')
-                                    is_negativo = False
-                                    if '(' in val_limpo and ')' in val_limpo:
-                                        is_negativo = True
-                                        val_limpo = val_limpo.replace('(', '').replace(')', '')
-                                    
-                                    valor = float(val_limpo)
-                                    if is_negativo:
-                                        valor = -valor
-                                    
-                                    val1 = partes[i-1]
-                                    val2 = partes[i-2]
-                                    
-                                    if val1.isdigit() and val2.isdigit():
-                                        cupom = val2
-                                        conta = val1
-                                        
-                                        dados.append({
-                                            "Conta": str(conta).strip(),
-                                            "Cupom": str(cupom).strip(),
-                                            "Valor_TCPOS": valor
-                                        })
-                                        break
-                                except ValueError:
-                                    continue
+    
+    # Mapeamento solicitado: Coluna B (índice 1) = Cupom, Coluna D (índice 3) = Conta, Coluna I (índice 8) = Valor
+    col_cupom_idx = 1
+    col_conta_idx = 3
+    col_valor_idx = 8
+    
+    for _, row in df_raw.iterrows():
+        try:
+            val_cupom = str(row.iloc[col_cupom_idx]) if pd.notna(row.iloc[col_cupom_idx]) else ""
+            val_conta = str(row.iloc[col_conta_idx]) if pd.notna(row.iloc[col_conta_idx]) else ""
+            val_valor = row.iloc[col_valor_idx] if pd.notna(row.iloc[col_valor_idx]) else 0
+            
+            # Limpa e valida se são números válidos
+            cupom = val_cupom.replace('.0', '').strip()
+            conta = val_conta.replace('.0', '').strip()
+            
+            if cupom.isdigit() and conta.isdigit():
+                # Tratamento de valor monetário (suportando negativos/estornos)
+                valor_str = str(val_valor).replace('R$', '').strip().replace(',', '.')
+                is_negativo = False
+                if '(' in valor_str and ')' in valor_str:
+                    is_negativo = True
+                    valor_str = valor_str.replace('(', '').replace(')', '')
+                
+                valor_num = float(valor_str) if valor_str != '' else 0.0
+                if is_negativo:
+                    valor_num = -valor_num
+                
+                dados.append({
+                    "Conta": conta,
+                    "Cupom": cupom,
+                    "Valor_TCPOS": valor_num
+                })
+        except Exception:
+            continue
+            
     return pd.DataFrame(dados)
 
 
-# --- FUNÇÃO 2: LER OPERA COM HERANÇA DE LINHA (COLUNAS AA E AP) ---
+# --- FUNÇÃO 2: LER OPERA (COLUNAS AA E AP) ---
 @st.cache_data
 def extrair_opera_planilha(arquivo_xls):
     try:
@@ -129,15 +138,15 @@ if file_tcpos and file_opera:
     if st.button("🔍 Iniciar Conferência", type="primary", use_container_width=True):
         with st.spinner("Lendo os dados e cruzando as informações..."):
             
-            df_tcpos = extrair_tcpos_pdf(file_tcpos)
+            df_tcpos = extrair_tcpos_planilha(file_tcpos)
             df_opera = extrair_opera_planilha(file_opera)
             
             if df_tcpos.empty:
-                st.error("❌ O PDF do TCPOS não retornou dados.")
+                st.error("❌ A planilha do TCPOS não retornou dados nas colunas B, D e I.")
                 st.stop()
                 
             if df_opera.empty:
-                st.error("❌ A planilha do Opera não retornou dados válidos nas colunas esperadas.")
+                st.error("❌ A planilha do Opera não retornou dados válidos.")
                 st.stop()
             
             df_tcpos = df_tcpos.drop_duplicates(subset=['Conta', 'Cupom'])
@@ -183,7 +192,7 @@ if file_tcpos and file_opera:
             st.markdown("---")
             st.success("✅ Cruzamento concluído com sucesso!")
             
-            # --- ABAS DE RESULTADOS COM OS TOTAIS EM DESTAQUE ---
+            # --- ABAS DE RESULTADOS ---
             aba1, aba2, aba3, aba4 = st.tabs([
                 f"Faltam no Opera ({len(so_tcpos)}) — R$ {total_so_tcpos:,.2f}", 
                 f"Sobrando no Opera ({len(so_opera)}) — R$ {total_so_opera:,.2f}", 
